@@ -9,59 +9,16 @@ import math
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
+import ODrive_controller
 
-# Dummy controller used for display-only GUI (no hardware access)
-class DummyController:
-    def __init__(self):
-        self.is_offset = False
-        self.closed_loop_control = False
-        self._start_time = time.time()
-        self._paused = False
-    def start(self):
-        # no-op for display-only
-        pass
-    def pause_logging(self):
-        self._paused = True
-    def resume_logging(self):
-        self._paused = False
-    def get_data(self):
-        # generate sample time series (sine/cosine) for plotting
-        t_now = time.time()
-        xs = [t_now - i*0.05 for i in range(100)][::-1]
-        data = []
-        for tt in xs:
-            dt = tt - self._start_time
-            pos = 30.0 * math.sin(dt)
-            vel = 30.0 * math.cos(dt)
-            tor = 0.5 * math.sin(dt*0.5)
-            data.append((tt, pos, vel, tor))
-        return data
-    def get_status(self):
-        # return a static-ish status for display
-        return {"pos": 0.0, "idle": True, "estop": False, "error": False, "connected": True, "closed_loop": False, "is_offset": self.is_offset}
-    def shutdown(self, wait_timeout=0):
-        pass
-    def is_idle(self):
-        return True
-    def set_offset(self):
-        self.is_offset = True
-        return True
-    def apply_move(self, *args, **kwargs):
-        return True
-    def send_parameters(self, *args, **kwargs):
-        return True
-    def emergency_stop(self):
-        pass
-    def reset_estop(self):
-        pass
-    def clear_error(self):
-        pass
+IDLE = ODrive_controller.IDLE
+CLOSE_LOOP_CONTROL = ODrive_controller.CLOSED_LOOP_CONTROL
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ControlGUI")
 
 POLL_INTERVAL_MS = 150  # GUI poll interval for status updates
-PLOT_INTERVAL_MS = 200  # plot refresh interval
+PLOT_INTERVAL_MS = 50  # plot refresh interval
 
 class ControlGUI(tk.Tk):
     def __init__(self):
@@ -70,8 +27,12 @@ class ControlGUI(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Display-only dummy controller (no hardware)
-        self.controller = DummyController()
+        self.controller = ODrive_controller.ODriveThread()
         self.controller.start()
+
+        self.parm_labels = ["Control bandwidth:", "Encoder bandwidth:", "External load (kg):", "Load position (m):",
+                  "Coulomb friction (Nm):", "Viscous friction (Nms/deg):", "Kp:", "Kd:"]
+        self.param_vars = []
 
         # UI state
         self.plotting = True
@@ -96,7 +57,7 @@ class ControlGUI(tk.Tk):
         right.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Plots: 3 stacked subplots (Position, Velocity, Torque)
-        self.fig = Figure(figsize=(8, 6), dpi=100)
+        self.fig = Figure(figsize=(6, 6), dpi=100) # 600x600 px là kích thước khởi tạo
         self.ax_pos = self.fig.add_subplot(311)
         self.ax_vel = self.fig.add_subplot(312)
         self.ax_tor = self.fig.add_subplot(313)
@@ -106,64 +67,72 @@ class ControlGUI(tk.Tk):
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # Right panel: top area for buttons
+        # Action buttons panel: top area for buttons ===================================================================================
         top_right = ttk.Frame(right, padding=6)
         top_right.pack(side=tk.TOP, fill=tk.X)
 
-        # Offset button (red when not offset, green and disabled when offset)
-        self.btn_offset = tk.Button(top_right, text="Offset", width=10)
-        self.btn_offset.configure(bg="tomato")  # red-ish initially
-        self.btn_offset.pack(pady=(2, 6))
+        for c in range(3): top_right.columnconfigure(c, weight=1)
+        for r in range(2): top_right.rowconfigure(r, weight=1)
 
-        # Stop plotting / Continue toggle
-        self.btn_plot = ttk.Button(top_right, text="Stop plotting")
-        self.btn_plot.pack(fill=tk.X, pady=(0,6))
+        # 1. Status Label
+        self.status_lable = tk.Label(top_right, text="Ready", relief="ridge", bg="lightgreen")
+        self.status_lable.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        # 2. Offset button
+        self.btn_offset = tk.Button(top_right, text="Offset", bg="tomato", relief="raised", command=self._on_offset)
+        self.btn_offset.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
+        # 3. IDLE/Close loop toggle
+        self.btn_mode = tk.Button(top_right, text="Close Loop", bg="lightgreen", relief="raised")
+        self.btn_mode.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+        # 4. Stop plotting: Chuyển từ ttk.Button sang tk.Button để đồng bộ hình dáng
+        self.btn_plot = tk.Button(top_right, text="Stop plotting", relief="raised")
+        self.btn_plot.grid(row=1, column=1, sticky="nsew", padx=2, pady=2)
+        # 5. Reset 
+        self.btn_reset = tk.Button(top_right, text="Reset", relief="raised")
+        self.btn_reset.grid(row=2, column=0, sticky="nsew", padx=2, pady=2)    
+        # 6. EStop
+        self.btn_estop = tk.Button(top_right, text="ESTOP", bg="red", fg="white", relief="raised")
+        self.btn_estop.grid(row=2, column=1, sticky="nsew", padx=2, pady=2)
 
-        # Close loop toggle
-        self.btn_cloop = tk.Button(top_right, text="Close Loop", width=10, bg="lightgreen")
-        self.btn_cloop.pack(pady=(0,6))
-
-        # ESTOP / Reset / Ready area
-        estop_frame = ttk.Frame(top_right)
-        estop_frame.pack(pady=(6,2), fill=tk.X)
-        self.btn_estop = tk.Button(estop_frame, text="ESTOP", bg="red", fg="white", width=8)
-        self.btn_estop.pack(side=tk.LEFT, padx=(0,4))
-        self.btn_reset = tk.Button(estop_frame, text="Reset", width=8)
-        self.btn_reset.pack(side=tk.LEFT)
-        self.label_ready = ttk.Label(top_right, text="Ready", relief=tk.SUNKEN, width=12)
-        self.label_ready.pack(pady=(6,2))
-
-        # Middle right: Move controls (Position display, Target entry, Move time, Move button)
+        # Move controls ====================================================================================================================
         move_frame = ttk.LabelFrame(right, text="Move", padding=8)
         move_frame.pack(padx=6, pady=8, fill=tk.X)
-
+        # Display position
         ttk.Label(move_frame, text="Position (deg):").grid(row=0, column=0, sticky=tk.W)
         self.entry_pos = ttk.Entry(move_frame, width=12, state="readonly")
         self.entry_pos.grid(row=0, column=1, padx=4, pady=2)
-
+        # Enter target position
         ttk.Label(move_frame, text="Target (deg):").grid(row=1, column=0, sticky=tk.W)
-        self.var_target = tk.StringVar()
+        self.var_target = tk.StringVar() # Biến dùng để giữ giá trị
         self.entry_target = ttk.Entry(move_frame, textvariable=self.var_target, width=12, state="disabled")
         self.entry_target.grid(row=1, column=1, padx=4, pady=2)
-
+        # Enter desired moving time
         ttk.Label(move_frame, text="Move time (s):").grid(row=2, column=0, sticky=tk.W)
-        self.var_move_time = tk.StringVar(value="1.0")
+        self.var_move_time = tk.StringVar(value="1.0") # Biến dùng để giữ giá trị
         self.entry_move_time = ttk.Entry(move_frame, textvariable=self.var_move_time, width=12, state="disabled")
         self.entry_move_time.grid(row=2, column=1, padx=4, pady=2)
-
+        # Move button
         self.btn_move = ttk.Button(move_frame, text="Move")
         self.btn_move.grid(row=3, column=0, columnspan=2, pady=(6,0), sticky=tk.EW)
 
-        # Lower right: Send parameters block
+        # Error display =====================================================================================================================
+        error_frame = ttk.LabelFrame(right, text="Error", padding=8)
+        error_frame.pack(padx=6, pady=8, fill=tk.X)
+
+        ttk.Label(error_frame, text="Position error (deg):").grid(row=0, column=0, sticky=tk.W)
+        self.entry_pos_error = ttk.Entry(error_frame, width=12, state="readonly")
+        self.entry_pos_error.grid(row=0, column=1, padx=4, pady=2)
+
+        ttk.Label(error_frame, text="Velocity error (deg/s):").grid(row=1, column=0, sticky=tk.W)
+        self.entry_vel_error = ttk.Entry(error_frame, width=12, state="readonly")
+        self.entry_vel_error.grid(row=1, column=1, padx=4, pady=2)
+
+        # Lower right: Send parameters block ================================================================================================
         param_frame = ttk.LabelFrame(right, text="Parameters", padding=8)
         param_frame.pack(padx=6, pady=8, fill=tk.X)
 
         # parameters: control bandwidth, encoder bandwidth, external load, load pos, coulomb friction, visc friction, Kp, Kd
-        labels = ["Control bandwidth:", "Encoder bandwidth:", "External load (kg):", "Load position (m):",
-                  "Coulomb friction (Nm):", "Viscous friction (Nms/deg):", "Kp:", "Kd:"]
-        self.param_vars = []
         self._param_entries = []
-        for i, lab in enumerate(labels):
+        for i, lab in enumerate(self.parm_labels):
             ttk.Label(param_frame, text=lab).grid(row=i, column=0, sticky=tk.W, pady=1)
             v = tk.StringVar()
             ent = ttk.Entry(param_frame, textvariable=v, width=12, state="disabled")
@@ -172,7 +141,7 @@ class ControlGUI(tk.Tk):
             self._param_entries.append(ent)
 
         self.btn_send_param = ttk.Button(param_frame, text="Send parameter")
-        self.btn_send_param.grid(row=len(labels), column=0, columnspan=2, pady=(6,0), sticky=tk.EW)
+        self.btn_send_param.grid(row=len(self.parm_labels), column=0, columnspan=2, pady=(6,0), sticky=tk.EW)
 
         # Status area at bottom
         status_frame = ttk.Frame(right, padding=6)
@@ -182,37 +151,32 @@ class ControlGUI(tk.Tk):
         ttk.Label(status_frame, textvariable=self.status_text, relief=tk.RIDGE).pack(fill=tk.X)
 
         # Initialize some states
-        self._update_offset_button()
         self._update_param_entries(enabled=False)
 
         # Plot data lines
-        self._pos_line, = self.ax_pos.plot([], [], label="Position (deg)")
-        self._vel_line, = self.ax_vel.plot([], [], label="Velocity (deg/s)")
+        self._pos_line, = self.ax_pos.plot([], [], label="q (deg)")
+        self._pos_set_line, = self.ax_pos_set.plot([], [], label="q_d (deg)")
+        self._vel_line, = self.ax_vel.plot([], [], label="qdot (deg/s)")
+        self._vel_set_line, = self.ax_vel_set.plot([], [], label="qdot_d (deg/s)")
         self._tor_line, = self.ax_tor.plot([], [], label="Torque (Nm)")
         for ax in (self.ax_pos, self.ax_vel, self.ax_tor):
             ax.grid(True)
+            ax.legend(loc="upper right")
 
         self._data_cache = []  # cached list of [ (t, pos, vel, tor), ... ]
 
-    # ---------------------------
+    # -------------------------------------------------------------------------------------------------------------------------------------------
     # GUI callbacks
-    # ---------------------------
+    # -------------------------------------------------------------------------------------------------------------------------------------------
     def _on_offset(self):
-        # Disabled in display-only mode
-        pass
-
-    def _update_offset_button(self):
-        # set color & enabled based on controller.is_offset
+        self.controller.set_offset()
+        # set color & enabled
         try:
             st = self.controller.is_offset
         except Exception:
             st = False
-        if st:
-            self.btn_offset.configure(state="disabled", bg="light green")
-            self._set_target_entry_enabled(True)
-        else:
-            self.btn_offset.configure(state="normal", bg="tomato")
-            self._set_target_entry_enabled(False)
+        if st: self.btn_offset.configure(state="disabled", bg="light green")
+        else: self.btn_offset.configure(state="normal", bg="tomato")
 
     def _set_target_entry_enabled(self, enable):
         if enable:
@@ -222,36 +186,51 @@ class ControlGUI(tk.Tk):
             self.entry_target.configure(state="disabled")
 
     def _on_toggle_plot(self):
-        # Disabled in display-only mode
-        pass
-
-    def _on_toggle_cloop(self):
-        # Disabled in display-only mode
-        pass
+        if self.plotting:
+            self.btn_plot.config(text="Stop plotting")
+            self.plotting = False
+        else:
+            self.btn_plot.config(text="Continue plotting")
+            self.plotting = True
 
     def _on_estop(self):
-        # Disabled in display-only mode
-        pass
+        if self.controller._estop_event.is_set():
+            self.btn_estop.config(state="disabled")
+        else: self.btn_estop.config(state="active")
+
+        self.controller.emergency_stop()
 
     def _on_reset(self):
-        # Disabled in display-only mode
-        pass
+        self.controller.reset()
 
     def _on_move(self):
-        # Disabled in display-only mode
-        pass
+        target = self.var_target.get()
+        moveTime = self.var_move_time.get()
+        self.controller.moveTo(target, moveTime)
 
     def _on_send_parameters(self):
         # Disabled in display-only mode
         pass
 
+    def _on_mode_tog(self):
+        mode = self.controller.get_state()
+        if mode == IDLE:
+            self.btn_mode.config(text="Close Loop", bg="lightgreen", command=self.controller.enter_closed_loop)
+            self._update_param_entries(True)
+        else:
+            self.btn_mode.config(text="IDLE", bg="yelow", command=self.controller.return_IDLE)
+            self._update_param_entries(False)
+
     # ---------------------------
     # Background updates & plotting
     # ---------------------------
+    
+
+    
     def _poll_status(self):
         # Poll controller and update GUI widgets/buttons accordingly
         try:
-            st = self.controller.get_status()
+            st = self.controller.get_state()
         except Exception:
             st = None
 
@@ -266,7 +245,6 @@ class ControlGUI(tk.Tk):
             self.entry_pos.config(state="readonly")
 
             # Offset button update
-            self._update_offset_button()
 
             # Enable/disable parameter entries depending on IDLE
             idle = st.get("idle", False)
@@ -274,13 +252,13 @@ class ControlGUI(tk.Tk):
 
             # Update ready/estop labels/colors
             if st.get("estop", False):
-                self.label_ready.config(text="ESTOP", background="red")
+                self.status_lable.config(text="ESTOP", background="red")
             elif st.get("error", False):
-                self.label_ready.config(text="ERROR", background="orange")
+                self.status_lable.config(text="ERROR", background="orange")
             elif st.get("connected", False):
-                self.label_ready.config(text="Connected", background="lightgreen")
+                self.status_lable.config(text="Connected", background="lightgreen")
             else:
-                self.label_ready.config(text="Disconnected", background="lightgrey")
+                self.status_lable.config(text="Disconnected", background="lightgrey")
 
             # Update Close Loop button text to indicate current state
             if st.get("closed_loop", False):
@@ -304,42 +282,35 @@ class ControlGUI(tk.Tk):
         self.after(POLL_INTERVAL_MS, self._poll_status)
 
     def _update_param_entries(self, enabled):
-        state = "normal" if enabled else "disabled"
+        _state = "normal" if enabled else "disabled"
         for ent in getattr(self, "_param_entries", []):
             try:
-                ent.configure(state=state)
+                ent.configure(state=_state)
             except Exception:
                 pass
-        # Also ensure Move-related entries follow offset rule:
-        if self.controller.is_offset:
-            self.entry_target.configure(state="normal")
-        else:
-            self.entry_target.configure(state="disabled")
 
     def _gather_plot_data(self):
         # read controller.get_data() and convert into arrays for plotting
         try:
             data = self.controller.get_data()
         except Exception:
-            data = []
-        if not data:
-            return [], [], [], []
-        times = [d[0] for d in data]
+            pass
+
+        times, pos, vel, pos_set, vel_set, tor = zip(*data)
         t0 = times[0]
-        xs = [t - t0 for t in times]
-        pos = [d[1] for d in data]
-        vel = [d[2] for d in data]
-        tor = [d[3] for d in data]
-        return xs, pos, vel, tor
+        times = [t-t0 for t in times]
+        return times, pos, vel, pos_set, vel_set, tor
 
     def _plot_update(self):
         if self.plotting:
-            xs, pos, vel, tor = self._gather_plot_data()
-            if xs:
+            times, pos, vel, pos_set, vel_set, tor = self._gather_plot_data()
+            if times:
                 # update lines
-                self._pos_line.set_data(xs, pos)
-                self._vel_line.set_data(xs, vel)
-                self._tor_line.set_data(xs, tor)
+                self._pos_line.set_data(times, pos)
+                self._pos_line.set_data(times, pos)
+                self._vel_line.set_data(times, vel)
+                self._vel_line.set_data(times, vel)
+                self._tor_line.set_data(times, tor)
 
                 # autoscale axes
                 def autoscale(ax, x, y, margin=0.1):
@@ -347,9 +318,9 @@ class ControlGUI(tk.Tk):
                         return
                     ax.relim()
                     ax.autoscale_view()
-                autoscale(self.ax_pos, xs, pos)
-                autoscale(self.ax_vel, xs, vel)
-                autoscale(self.ax_tor, xs, tor)
+                autoscale(self.ax_pos, times, pos)
+                autoscale(self.ax_vel, times, vel)
+                autoscale(self.ax_tor, times, tor)
 
                 self.ax_pos.set_ylabel("deg")
                 self.ax_vel.set_ylabel("deg/s")

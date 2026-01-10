@@ -51,6 +51,10 @@ class ODriveThread(threading.Thread):
         self.ext_load = 0.0
         self.hanger_distance = 0.7 - 0.04 - 0.06
 
+        self.m = self.link_mass + self.hanger_mass + self.ext_load
+        self.lc = (self.center_distance * self.link_mass + self.hanger_distance * (self.hanger_mass + self.ext_load))/self.m
+        self.Ic = self.const_inertia + (self.hanger_mass + self.ext_load) * (self.hanger_distance **2)
+
         self.coul_friction = 0.0
         self.visc_friction = 0.00276 * gear_ratio**2
 
@@ -107,7 +111,7 @@ class ODriveThread(threading.Thread):
 
     def is_controlable(self):
         #return self.connected and self.closed_loop_control and self.isOffset and not self.estop
-        return self.connected and self.closed_loop_control and self.isOffset and not self.self._estop_event.is_set()
+        return self.connected and self.closed_loop_control and self.isOffset and not self._estop_event.is_set()
     
     def update_parameter(self, *parameters): #không cần lock 
         try:
@@ -123,6 +127,11 @@ class ODriveThread(threading.Thread):
             self.visc_friction = parameters[5]
             self.Kp = parameters[6]
             self.Kd = parameters[7]
+
+            self.m = self.link_mass + self.hanger_mass + self.ext_load
+            self.lc = (self.center_distance * self.link_mass + self.hanger_distance * (self.hanger_mass + self.ext_load))/self.m
+            self.Ic = self.const_inertia + (self.hanger_mass + self.ext_load) * (self.hanger_distance **2)
+
         except Exception as e:
             print("Parameter update error:", e)
 
@@ -146,8 +155,11 @@ class ODriveThread(threading.Thread):
             return list(self.data)
     
     def set_offset(self): #Sử dụng ở GUI
-        self.offset = self.axis.encoder.pos_estimate
-        self.isOffset = True
+        try:
+            self.offset = self.axis.encoder.pos_estimate
+            self.isOffset = True
+        except Exception:
+            pass
 
     def moveTo(self, newP, moveT):
         with self.data_lock:
@@ -173,9 +185,9 @@ class ODriveThread(threading.Thread):
             pass
 
     def dynamic_calculation(self):
-        m = self.link_mass + self.hanger_mass + self.ext_load
-        lc = (self.center_distance * self.link_mass + self.hanger_distance * (self.hanger_mass + self.ext_load))/m
-        Ic = self.const_inertia + (self.hanger_mass + self.ext_load) * (self.hanger_distance **2)
+        m = self.m
+        lc = self.lc
+        Ic = self.Ic
 
         q = self.pos * (2 * pi) / 360
         qdot = self.vel * (2 * pi) / 360
@@ -218,18 +230,18 @@ class ODriveThread(threading.Thread):
                     self._stop_event.wait(0.1)
                     continue    
 
-                if self.isOffset and not self.closed_loop_control:
-                    self.enter_closed_loop()
-                else: 
-                    self._stop_event.wait(0.1)
-                    continue
+                # if self.isOffset and not self.closed_loop_control:
+                #     self.enter_closed_loop()
+                # else: 
+                #     self._stop_event.wait(0.1)
+                #     continue
 
                 # Data collect
                 with self.data_lock:
                     self.pos = (self.axis.encoder.pos_estimate - self.offset) * 360 / gear_ratio - 90
                     self.vel = self.axis.encoder.vel_estimate * 360 / gear_ratio
                     tor_set = self.axis.motor.current_control.Iq_setpoint * self.Kt * gear_ratio * self.tor_coef
-                    self.data.append((time.time(), self.pos, self.vel, self.pos_set, self.vel_set, self.acc_set, tor_set))
+                    self.data.append((time.time(), self.pos, self.vel, self.pos_set, self.vel_set, tor_set))
                     if len(self.data) > 800:
                         self.data = self.data[-800:]
 
