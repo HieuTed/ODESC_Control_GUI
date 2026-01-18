@@ -9,11 +9,11 @@ import math
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
-import ODrive_controller
+import Basic_controller as controller
 
 # Map constants from controller module (kept for readability)
-IDLE = ODrive_controller.IDLE
-CLOSE_LOOP_CONTROL = ODrive_controller.CLOSED_LOOP_CONTROL
+IDLE = controller.IDLE
+CLOSE_LOOP_CONTROL = controller.CLOSED_LOOP_CONTROL
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ControlGUI")
@@ -28,19 +28,29 @@ class ControlGUI(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Display-only dummy controller (or real, depending on underlying module)
-        self.controller = ODrive_controller.ODriveThread()
+        self.controller = controller.ODriveThread()
         self.controller.start()
 
-        self.parm_labels = ["Control bandwidth:", "Encoder bandwidth:", "External load (kg):", "Load position (m):",
-                  "Coulomb friction (Nm):", "Viscous friction (Nms/deg):", "Kp:", "Kd:"]
-        self.param_vars = []
+        self.control_elms = {
+            "Target": (self.controller.start_pos, "deg"), 
+            "Move time": (5.0, "s"), 
+            "Kp": (self.controller.Kp, None), 
+            "Kd": (self.controller.Kp, None), 
+            "Control bandwidth": (self.controller.ctrl_bandwidth, None), 
+            "Encoder bandwidth": (self.controller.enc_bandwidth, None)
+        }
+
+        self.load_params = {
+            "External load": (self.controller.ext_load, "kg"), 
+            "Load position": (self.controller.hanger_distance, "m"), 
+            "Coulomb friction": (self.controller.coul_friction, "Nm"), 
+            "Viscous friction": (self.controller.visc_friction, "Nm/deg")
+        }
 
         # UI state
         self.plotting = True
-
         # Build UI
         self._build_ui()
-
         # Start periodic combined updates
         self.after(UPDATE_INTERVAL_MS, self._update)
 
@@ -66,7 +76,7 @@ class ControlGUI(tk.Tk):
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # Action buttons panel
+        # Action buttons panel=============================================================================================================================================
         top_right = ttk.Frame(right, padding=6)
         top_right.pack(side=tk.TOP, fill=tk.X)
 
@@ -76,49 +86,49 @@ class ControlGUI(tk.Tk):
         # 1. Status Label
         self.status_label = tk.Label(top_right, text="Ready", relief="ridge", bg="lightgreen")
         self.status_label.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
-
         # 2. Offset button
         self.btn_offset = tk.Button(top_right, text="Offset", bg="tomato", relief="raised", command=self._on_offset)
         self.btn_offset.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
-
         # 3. IDLE/Close loop toggle (mode)
         self.btn_mode = tk.Button(top_right, text="Close Loop", bg="lightgreen", relief="raised", command=self._on_mode_tog)
         self.btn_mode.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
-
         # 4. Stop/Continue plotting
         self.btn_plot = tk.Button(top_right, text="Stop plotting", relief="raised", command=self._on_toggle_plot)
         self.btn_plot.grid(row=1, column=1, sticky="nsew", padx=2, pady=2)
-
         # 5. Reset
         self.btn_reset = tk.Button(top_right, text="Reset", relief="raised", command=self._on_reset)
         self.btn_reset.grid(row=2, column=0, sticky="nsew", padx=2, pady=2)
-
         # 6. EStop
         self.btn_estop = tk.Button(top_right, text="ESTOP", bg="red", fg="white", relief="raised", command=self._on_estop)
         self.btn_estop.grid(row=2, column=1, sticky="nsew", padx=2, pady=2)
 
-        # Move controls
-        move_frame = ttk.LabelFrame(right, text="Move", padding=8)
-        move_frame.pack(padx=6, pady=8, fill=tk.X)
-        # Display position
-        ttk.Label(move_frame, text="Position (deg):").grid(row=0, column=0, sticky=tk.W)
-        self.entry_pos = ttk.Entry(move_frame, width=12, state="readonly")
-        self.entry_pos.grid(row=0, column=1, padx=4, pady=2)
-        # Enter target position
-        ttk.Label(move_frame, text="Target (deg):").grid(row=1, column=0, sticky=tk.W)
-        self.var_target = tk.StringVar()
-        self.entry_target = ttk.Entry(move_frame, textvariable=self.var_target, width=12, state="disabled")
-        self.entry_target.grid(row=1, column=1, padx=4, pady=2)
-        # Enter desired moving time
-        ttk.Label(move_frame, text="Move time (s):").grid(row=2, column=0, sticky=tk.W)
-        self.var_move_time = tk.StringVar(value="5.0")
-        self.entry_move_time = ttk.Entry(move_frame, textvariable=self.var_move_time, width=12, state="disabled")
-        self.entry_move_time.grid(row=2, column=1, padx=4, pady=2)
-        # Move button
-        self.btn_move = ttk.Button(move_frame, text="Move", command=self._on_move)
-        self.btn_move.grid(row=3, column=0, columnspan=2, pady=(6,0), sticky=tk.EW)
+        # Move controls==================================================================================================================================================
+        control_frame = ttk.LabelFrame(right, text="Control", padding=8)
+        control_frame.pack(padx=6, pady=8, fill=tk.X)
 
-        # Error display
+        control_grid = ttk.Frame(control_frame)
+        control_grid.pack(fill=tk.X)
+
+        ttk.Label(control_grid, text="Position (deg):").grid(row=0, column=0, sticky=tk.W)
+        self.entry_pos = ttk.Entry(control_grid, width=12, state="readonly")
+        self.entry_pos.grid(row=0, column=1, padx=4, pady=2)
+
+        self.control_panel = []
+        
+        for i, (key, (val, unit)) in enumerate(self.control_elms.items()):
+            row_idx = i + 1
+            label_text = f"{key} ({unit}):" if unit else f"{key}:"
+            ttk.Label(control_grid, text=label_text).grid(row=row_idx, column=0, sticky=tk.W, pady=1)
+            v = tk.StringVar(value=f"{val:.3f}")
+            entry = ttk.Entry(control_grid, textvariable=v, width=12) 
+            entry.grid(row=row_idx, column=1, padx=4, pady=2) 
+            self.control_panel.append([entry, v])
+
+        # Move button
+        self.btn_move = ttk.Button(control_frame, text="Move", command=self._on_move, state="disable")
+        self.btn_move.pack(pady=(10, 0), fill=tk.X)
+
+        # Error display==================================================================================================================================================
         error_frame = ttk.LabelFrame(right, text="Error", padding=8)
         error_frame.pack(padx=6, pady=8, fill=tk.X)
 
@@ -130,23 +140,27 @@ class ControlGUI(tk.Tk):
         self.entry_vel_error = ttk.Entry(error_frame, width=12, state="readonly")
         self.entry_vel_error.grid(row=1, column=1, padx=4, pady=2)
 
-        # Send parameters block
+        # Send parameters block=========================================================================================================================================
         param_frame = ttk.LabelFrame(right, text="Parameters", padding=8)
         param_frame.pack(padx=6, pady=8, fill=tk.X)
 
-        self._param_entries = []
-        for i, lab in enumerate(self.parm_labels):
-            ttk.Label(param_frame, text=lab).grid(row=i, column=0, sticky=tk.W, pady=1)
-            v = tk.StringVar()
-            ent = ttk.Entry(param_frame, textvariable=v, width=12, state="disabled")
-            ent.grid(row=i, column=1, padx=4, pady=1)
-            self.param_vars.append(v)
-            self._param_entries.append(ent)
+        param_grid = ttk.Frame(param_frame)
+        param_grid.pack(fill=tk.X)
 
-        self.btn_send_param = ttk.Button(param_frame, text="Send parameter", command=self._on_send_parameters)
-        self.btn_send_param.grid(row=len(self.parm_labels), column=0, columnspan=2, pady=(6,0), sticky=tk.EW)
+        self.param_panel = []
+        for i, (key, (val, unit)) in enumerate(self.load_params.items()):
+            row_idx = i + 1
+            ttk.Label(param_grid, text=f"{key} ({unit}):" if unit else f"{key}:").grid(row=row_idx, column=0, sticky=tk.W, pady=1)
+            
+            v = tk.StringVar(value=f"{val:.3f}")
+            entry = ttk.Entry(param_grid, textvariable=v, width=12)
+            entry.grid(row=row_idx, column=1, padx=4, pady=2) 
+            self.param_panel.append([entry, v])
 
-        # Status area at bottom
+        self.btn_send_param = ttk.Button(param_frame, text="Send", command=self._on_send_parameters, state="disable")
+        self.btn_send_param.pack(pady=(10, 0), fill=tk.X)
+
+        # Status area at bottom==========================================================================================================================================
         status_frame = ttk.Frame(right, padding=6)
         status_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -154,9 +168,9 @@ class ControlGUI(tk.Tk):
         ttk.Label(status_frame, textvariable=self.status_text, relief=tk.RIDGE).pack(fill=tk.X)
 
         # Initialize some states
-        self._update_param_entries(enabled=False)
+        self.send_enable(enabled=False)
 
-        # Plot data lines (empty initially)
+        # Plot data lines (empty initially)===========================================================================================================================
         self._pos_line, = self.ax_pos.plot([], [], label="q (deg)")
         self._pos_set_line, = self.ax_pos.plot([], [], label="q_d (deg)", linestyle="--")
         self._vel_line, = self.ax_vel.plot([], [], label="qdot (deg/s)")
@@ -178,7 +192,6 @@ class ControlGUI(tk.Tk):
             # set color & enabled
             if getattr(self.controller, "isOffset", False):
                 self.btn_offset.configure(state="disabled", bg="lightgreen")
-                self.entry_target.configure(state="normal")
             else:
                 self.btn_offset.configure(state="normal", bg="tomato")
         except Exception:
@@ -186,10 +199,10 @@ class ControlGUI(tk.Tk):
 
     def _set_target_entry_enabled(self, enable):
         if enable:
-            self.entry_target.configure(state="normal")
+            self.control_panel[0][0].configure(state="normal")
         else:
-            self.entry_target.delete(0, tk.END)
-            self.entry_target.configure(state="disabled")
+            self.control_panel[0][0].delete(0, tk.END)
+            self.control_panel[0][0].configure(state="disabled")
 
     def _on_toggle_plot(self):
         self.plotting = not self.plotting
@@ -215,13 +228,14 @@ class ControlGUI(tk.Tk):
 
     def _on_move(self):
         try:
-            target = float(self.var_target.get())
-            moveTime = float(self.var_move_time.get())
+            # control_panel[0] = Target, control_panel[1] = Move time
+            target = float(self.control_panel[0][1].get())
+            moveTime = float(self.control_panel[1][1].get())
         except Exception:
             messagebox.showerror("Input error", "Target and Move time must be numeric")
             return
         try:
-            self.controller.moveTo(target, moveTime)
+            self.controller.moveTo(target)
         except Exception:
             logger.exception("Move error")
 
@@ -229,19 +243,18 @@ class ControlGUI(tk.Tk):
         # Read parameter entries and send to controller.update_parameter
         try:
             vals = []
-            for v in self.param_vars:
-                s = v.get().strip()
+            for entry, var in self.param_panel:
+                s = var.get().strip()
                 if s == "":
                     vals.append(0.0)
                 else:
-                    # treat as float except first two (bandwidths) -> int
                     vals.append(float(s))
-            if len(vals) < 8:
+            if len(vals) < len(self.load_params):
                 messagebox.showwarning("Parameters", "Please fill all parameter fields")
                 return
-            # Convert first two to int (bandwidths)
-            params = [int(vals[0]), int(vals[1])] + vals[2:8]
-            self.controller.update_parameter(*params)
+            # Send parameters to controller
+            ext_load, load_pos, coul_fric, visc_fric = vals
+            self.controller.update_parameter(ext_load, load_pos, coul_fric, visc_fric)
             self.status_text.set("Status: parameters sent")
         except Exception:
             logger.exception("Send parameters error")
@@ -254,12 +267,14 @@ class ControlGUI(tk.Tk):
                 # currently closed -> go to IDLE
                 self.controller.return_IDLE()
                 self.btn_mode.config(text="Close Loop", bg="lightgreen")
-                self._update_param_entries(False)
+                self.send_enable(True)
+                self.move_enable(getattr(self.controller, "isOffset", False))
             else:
                 # try to enter closed loop
                 self.controller.enter_closed_loop()
                 self.btn_mode.config(text="IDLE", bg="yellow")
-                self._update_param_entries(True)
+                self.send_enable(False)
+                self.move_enable(False)
         except Exception:
             logger.exception("Mode toggle error")
 
@@ -294,8 +309,9 @@ class ControlGUI(tk.Tk):
             else:
                 self.btn_mode.config(text="Close Loop", bg="lightgreen")
 
-            # Enable/disable parameter entries depending on IDLE (idle == not closed-loop)
-            self._update_param_entries(enabled=(not closed_loop))
+            # Enable/disable buttons depending on mode and offset
+            self.send_enable(enabled=(not closed_loop))
+            self.move_enable(enabled=(is_offset and not closed_loop))
 
             # Enable/disable target entry depending on offset
             if is_offset:
@@ -390,13 +406,15 @@ class ControlGUI(tk.Tk):
         # schedule next update
         self.after(UPDATE_INTERVAL_MS, self._update)
 
-    def _update_param_entries(self, enabled):
-        _state = "normal" if enabled else "disabled"
-        for ent in getattr(self, "_param_entries", []):
-            try:
-                ent.configure(state=_state)
-            except Exception:
-                pass
+    def move_enable(self, enabled):
+        """Enable/disable Move button based on offset and idle state"""
+        btn_state = "normal" if enabled else "disabled"
+        self.btn_move.configure(state=btn_state)
+
+    def send_enable(self, enabled):
+        """Enable/disable Send button based on idle state"""
+        btn_state = "normal" if enabled else "disabled"
+        self.btn_send_param.configure(state=btn_state)
 
     # ---------------------------
     # On-close / cleanup
