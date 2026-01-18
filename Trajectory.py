@@ -3,9 +3,9 @@ from abc import ABC, abstractmethod
 class TrajectoryBase(ABC):
     def __init__(self):
         # Khởi tạo các biến lưu trữ tham số đã tính toán
-        self.start_p = 0.0
-        self.end_p = 0.0
-        self.total_time = 0.0
+        self.start_p = -90.0
+        self.end_p = -90.0
+        self.total_time = 100000.0
         self.direction = 1.0
         
     @abstractmethod

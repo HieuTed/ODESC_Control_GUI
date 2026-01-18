@@ -9,10 +9,10 @@ import math
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
-import ODrive_controller
+import ODrive_controller_v2
 
-IDLE = ODrive_controller.IDLE
-CLOSE_LOOP_CONTROL = ODrive_controller.CLOSED_LOOP_CONTROL
+IDLE = ODrive_controller_v2.IDLE
+CLOSE_LOOP_CONTROL = ODrive_controller_v2.CLOSED_LOOP_CONTROL
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ControlGUI")
@@ -27,7 +27,7 @@ class ControlGUI(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Display-only dummy controller (no hardware)
-        self.controller = ODrive_controller.ODriveThread()
+        self.controller = ODrive_controller_v2.ODriveThread()
         self.controller.start()
 
         self.parm_labels = ["Control bandwidth:", "Encoder bandwidth:", "External load (kg):", "Load position (m):",

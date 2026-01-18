@@ -228,33 +228,37 @@ class ControlGUI(tk.Tk):
 
     def _on_move(self):
         try:
-            # control_panel[0] = Target, control_panel[1] = Move time
-            target = float(self.control_panel[0][1].get())
-            moveTime = float(self.control_panel[1][1].get())
+            elms = []
+            for entry, var in self.control_panel:
+                s = var.get().strip()
+                if s == "":
+                    elms.append(0.0)
+                else:
+                    elms.append(float(s))
+            if len(elms) < len(self.load_params):
+                messagebox.showwarning("Control", "Please fill all control elements")
+                return
+
+            self.controller.update_ctrlElms(*elms)
+            self.status_text.set("Status: control input sent")
         except Exception:
-            messagebox.showerror("Input error", "Target and Move time must be numeric")
-            return
-        try:
-            self.controller.moveTo(target)
-        except Exception:
-            logger.exception("Move error")
+            logger.exception("Send control input error")
+            messagebox.showerror("Error", "Failed to send control input to controller")
 
     def _on_send_parameters(self):
-        # Read parameter entries and send to controller.update_parameter
         try:
-            vals = []
+            params = []
             for entry, var in self.param_panel:
                 s = var.get().strip()
                 if s == "":
-                    vals.append(0.0)
+                    params.append(0.0)
                 else:
-                    vals.append(float(s))
-            if len(vals) < len(self.load_params):
+                    params.append(float(s))
+            if len(params) < len(self.load_params):
                 messagebox.showwarning("Parameters", "Please fill all parameter fields")
                 return
-            # Send parameters to controller
-            ext_load, load_pos, coul_fric, visc_fric = vals
-            self.controller.update_parameter(ext_load, load_pos, coul_fric, visc_fric)
+
+            self.controller.update_loadParms(*params)
             self.status_text.set("Status: parameters sent")
         except Exception:
             logger.exception("Send parameters error")
@@ -263,18 +267,18 @@ class ControlGUI(tk.Tk):
     def _on_mode_tog(self):
         # Toggle closed loop / IDLE on controller
         try:
-            if getattr(self.controller, "closed_loop_control", False):
+            if self.controller.get_state == CLOSE_LOOP_CONTROL:
                 # currently closed -> go to IDLE
                 self.controller.return_IDLE()
                 self.btn_mode.config(text="Close Loop", bg="lightgreen")
                 self.send_enable(True)
-                self.move_enable(getattr(self.controller, "isOffset", False))
+                self.move_enable(False)
             else:
                 # try to enter closed loop
                 self.controller.enter_closed_loop()
                 self.btn_mode.config(text="IDLE", bg="yellow")
                 self.send_enable(False)
-                self.move_enable(False)
+                self.move_enable(True)
         except Exception:
             logger.exception("Mode toggle error")
 
@@ -311,7 +315,7 @@ class ControlGUI(tk.Tk):
 
             # Enable/disable buttons depending on mode and offset
             self.send_enable(enabled=(not closed_loop))
-            self.move_enable(enabled=(is_offset and not closed_loop))
+            self.move_enable(enabled=(is_offset and closed_loop))
 
             # Enable/disable target entry depending on offset
             if is_offset:

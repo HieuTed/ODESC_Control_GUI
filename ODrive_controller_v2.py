@@ -59,8 +59,8 @@ class ODriveThread(threading.Thread):
         self.visc_friction = 0.00276 * gear_ratio**2
 
         # inputs
-        self.Kp = 1.0
-        self.Kd = 0.5
+        self.Kp = 0.01
+        self.Kd = 0.005
         self.torque_set = 0.0
         self.pos_set = - 90.0
         self.vel_set = 0.0    
@@ -240,7 +240,7 @@ class ODriveThread(threading.Thread):
                 with self.data_lock:
                     self.pos = (self.axis.encoder.pos_estimate - self.offset) * 360 / gear_ratio - 90
                     self.vel = self.axis.encoder.vel_estimate * 360 / gear_ratio
-                    tor_set = self.axis.motor.current_control.Iq_setpoint * self.Kt * gear_ratio * self.tor_coef
+                    tor_set = self.axis.motor.current_control.Iq_setpoint * self.Kt
                     self.data.append((time.time(), self.pos, self.vel, self.pos_set, self.vel_set, tor_set))
                     if len(self.data) > 800:
                         self.data = self.data[-800:]
