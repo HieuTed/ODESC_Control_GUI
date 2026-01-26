@@ -119,7 +119,7 @@ class ControlGUI(tk.Tk):
             row_idx = i + 1
             label_text = f"{key} ({unit}):" if unit else f"{key}:"
             ttk.Label(control_grid, text=label_text).grid(row=row_idx, column=0, sticky=tk.W, pady=1)
-            v = tk.StringVar(value=f"{val:.3f}")
+            v = tk.StringVar(value=f"{val:.2f}")
             entry = ttk.Entry(control_grid, textvariable=v, width=12) 
             entry.grid(row=row_idx, column=1, padx=4, pady=2) 
             self.control_panel.append([entry, v])

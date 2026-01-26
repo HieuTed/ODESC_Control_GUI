@@ -30,7 +30,7 @@ class ODriveThread(threading.Thread):
         # Driver components
         self.odrv = None
         self.axis = None
-        self.max_torque = 0.35 # Giữ hằng số này trong controller nếu nó là giới hạn vật lý/cài đặt
+        self.max_torque = 0.15  #min limit
         self.tor_coef = 0.708282
         self.Kt = 8.27/270
         self.offset = 0.0
@@ -56,8 +56,8 @@ class ODriveThread(threading.Thread):
         self.visc_friction = 0.00276 * gear_ratio**2 
 
         # inputs
-        self.Kp = 4
-        self.Kd = 1
+        self.Kp = 10
+        self.Kd = 3
         self.torque_set = 0.0
         self.pos_set = self.start_pos
         self.vel_set = 0.0    
@@ -130,6 +130,7 @@ class ODriveThread(threading.Thread):
             self.hanger_distance = loadParms[1]
             self.coul_friction = loadParms[2]
             self.visc_friction = loadParms[3]
+            self.max_torque = 2/15 * self.ext_load * self.hanger_distance +  1.5 
             self.m = self.link_mass + self.hanger_mass + self.ext_load
             self.lc = (self.center_distance * self.link_mass + self.hanger_distance * (self.hanger_mass + self.ext_load))/self.m
             self.Ic = self.const_inertia + (self.hanger_mass + self.ext_load) * (self.hanger_distance **2)
