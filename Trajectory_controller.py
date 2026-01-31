@@ -6,11 +6,11 @@ import odrive
 import math
 from odrive.enums import AXIS_STATE_CLOSED_LOOP_CONTROL, AXIS_STATE_IDLE
 from collections import deque
+from Trajectory import TrapezoidalTrajectory
 
 CLOSED_LOOP_CONTROL = AXIS_STATE_CLOSED_LOOP_CONTROL
 IDLE = AXIS_STATE_IDLE
 DEG2RAD = math.pi/180
-
 gear_ratio = 100.0
 g = 9.81
 
@@ -30,12 +30,15 @@ class ODriveThread(threading.Thread):
         # Driver components
         self.odrv = None
         self.axis = None
-        self.max_torque = 0.15  #min limit
+        self.max_torque = 0.2  # min limit
+        self.max_vel = 35 # deg/s
         self.tor_coef = 0.708282
         self.Kt = 8.27/270
         self.offset = 0.0
+        self.traj = TrapezoidalTrajectory()
 
         # Physic components
+        self.t_ref = - math.inf
         self.start_pos = -90
 
         self.link_mass = 1.125
@@ -56,13 +59,12 @@ class ODriveThread(threading.Thread):
         self.visc_friction = 0.00276 * gear_ratio**2 
 
         # inputs
-        self.Kp = 10
+        self.Kp = 30
         self.Kd = 5
         self.torque_set = 0.0
         self.pos_set = self.start_pos
         self.vel_set = 0.0    
-        self.acc_set = 0.0 
-        self.time_set = 5.0   
+        self.acc_set = 0.0   
         self.ctrl_bandwidth = 2000
         self.enc_bandwidth = 50
 
@@ -111,15 +113,19 @@ class ODriveThread(threading.Thread):
 
     def update_ctrlElms(self, *ctrlElms):
         try:
+            target = 0
+            time_set = 0
             with self.data_lock:
-                self.pos_set = ctrlElms[0]
-                self.time_set = ctrlElms[1]
+                self.t_ref = time.time()
+                target = ctrlElms[0]
+                time_set = ctrlElms[1]
                 self.Kp = ctrlElms[2]
                 self.Kd = ctrlElms[3]
                 self.ctrl_bandwidth = ctrlElms[4]
                 self.enc_bandwidth = ctrlElms[5]
                 self.axis.motor.config.current_control_bandwidth = self.ctrl_bandwidth
                 self.axis.encoder.config.bandwidth = self.enc_bandwidth
+            self.traj.param_calc(self.pos, target, time_set, self.max_vel)
 
         except Exception as e:
             print("Elements update error:", e)
@@ -129,11 +135,11 @@ class ODriveThread(threading.Thread):
             self.ext_load = loadParms[0]
             self.hanger_distance = loadParms[1]
             self.coul_friction = loadParms[2]
-            self.visc_friction = 0.00276 * gear_ratio**2  + loadParms[3]
+            self.visc_friction = loadParms[3]
+            self.max_torque = 2/15 * self.ext_load * self.hanger_distance +  1.5 
             self.m = self.link_mass + self.hanger_mass + self.ext_load
             self.lc = (self.center_distance * self.link_mass + self.hanger_distance * (self.hanger_mass + self.ext_load))/self.m
             self.Ic = self.const_inertia + (self.hanger_mass + self.ext_load) * (self.hanger_distance **2)
-            self.max_torque = loadParms[4]
 
         except Exception as e:
             print("Parameter update error:", e)
@@ -164,6 +170,8 @@ class ODriveThread(threading.Thread):
             pass
 
     def reset(self):
+        self.traj.reset()
+        self.t_ref = - math.inf
         self.return_IDLE()
         self.isOffset = False
         self._estop_event.clear()
@@ -179,11 +187,16 @@ class ODriveThread(threading.Thread):
         except Exception:
             pass
 
+    def setTarget(self):
+        t = time.time() - self.t_ref
+        self.pos_set, self.vel_set, self.acc_set = self.traj.desired_state(t) 
+
     def dynamic_calculation(self):
         m = self.m
         lc = self.lc
         Ic = self.Ic
 
+        self.setTarget()
         q = self.pos * DEG2RAD
         qdot = self.vel * DEG2RAD
         q_d = self.pos_set * DEG2RAD

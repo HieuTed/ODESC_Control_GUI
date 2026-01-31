@@ -1,12 +1,13 @@
 from abc import ABC, abstractmethod
+import math
 
 class TrajectoryBase(ABC):
     def __init__(self):
         # Khởi tạo các biến lưu trữ tham số đã tính toán
         self.start_p = -90.0
         self.end_p = -90.0
-        self.total_time = 100000.0
-        self.direction = 1.0
+        self.total_time = math.inf
+        self.direction = 1.0 
         
     @abstractmethod
     def param_calc(self, start_p, end_p, move_t, max_v):
@@ -24,13 +25,19 @@ class TrajectoryBase(ABC):
         Output: pos, vel, acc
         """
         pass
+    def reset(self):
+        self.start_p = -90.0
+        self.end_p = -90.0
+        self.total_time = math.inf
+        self.direction = 1.0 
 
 class TrapezoidalTrajectory(TrajectoryBase):
     def __init__(self):
         super().__init__()
         # Các biến riêng của hình thang
-        self.accel = 0.0
-        self.v_peak = 0.0
+        self.j_peak = 4   # deg/s^3
+        self.accel = 0.0  # deg/s^2
+        self.v_peak = 0.0 # deg/s
         self.t_acc = 0.0  # Thời gian tăng tốc
         self.t_dec = 0.0  # Thời điểm bắt đầu giảm tốc
 
@@ -42,7 +49,11 @@ class TrapezoidalTrajectory(TrajectoryBase):
         abs_dist = abs(distance)
         c = 1 - abs_dist / (move_t * max_v)
 
-        if c < 0.1: 
+        if abs_dist < 0.005:
+            self.v_peak = 0.0
+            self.t_acc = 0.0
+
+        elif c < 0.1: 
             self.v_peak = max_v
             self.accel = (1-0.1)/0.1 * max_v**2/abs_dist 
             self.t_acc = self.v_peak / self.accel 

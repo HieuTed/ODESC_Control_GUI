@@ -9,7 +9,7 @@ import math
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
-import Basic_controller as controller
+import Trajectory_controller as controller
 
 # Map constants from controller module (kept for readability)
 IDLE = controller.IDLE
@@ -35,7 +35,7 @@ class ControlGUI(tk.Tk):
             "Target": (self.controller.start_pos, "deg"), 
             "Move time": (5.0, "s"), 
             "Kp": (self.controller.Kp, None), 
-            "Kd": (self.controller.Kp, None), 
+            "Kd": (self.controller.Kd, None), 
             "Control bandwidth": (self.controller.ctrl_bandwidth, None), 
             "Encoder bandwidth": (self.controller.enc_bandwidth, None)
         }
@@ -44,7 +44,8 @@ class ControlGUI(tk.Tk):
             "External load": (self.controller.ext_load, "kg"), 
             "Load position": (self.controller.hanger_distance, "m"), 
             "Coulomb friction": (self.controller.coul_friction, "Nm"), 
-            "Viscous friction": (self.controller.visc_friction, "Nm/deg")
+            "Viscous friction": (self.controller.visc_friction, "Nm/rad"),
+            "Torque limit": (self.controller.max_torque, "Nm")
         }
 
         # UI state
@@ -267,18 +268,21 @@ class ControlGUI(tk.Tk):
     def _on_mode_tog(self):
         # Toggle closed loop / IDLE on controller
         try:
-            if self.controller.get_state == CLOSE_LOOP_CONTROL:
-                # currently closed -> go to IDLE
-                self.controller.return_IDLE()
-                self.btn_mode.config(text="Close Loop", bg="lightgreen")
-                self.send_enable(True)
-                self.move_enable(False)
-            else:
+            state = self.controller.get_state()
+            if state == IDLE:
                 # try to enter closed loop
                 self.controller.enter_closed_loop()
                 self.btn_mode.config(text="IDLE", bg="yellow")
                 self.send_enable(False)
                 self.move_enable(True)
+            else:
+                self.controller.return_IDLE()
+                self.btn_mode.config(text="Close Loop", bg="lightgreen")
+                self.send_enable(True)
+                self.move_enable(False)  
+                if state == None:
+                    messagebox.showwarning("Cảnh báo", "Không xác định trạng thái")              
+
         except Exception:
             logger.exception("Mode toggle error")
 
