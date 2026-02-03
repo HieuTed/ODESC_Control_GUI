@@ -65,10 +65,15 @@ class ODriveThread(threading.Thread):
         self.time_set = 5.0   
         self.ctrl_bandwidth = 2000
         self.enc_bandwidth = 50
-
+ 
         # show
         self.pos = 0.0
         self.vel = 0.0
+        self.pre_vel = 0.0
+        self.acc = 0.0
+        self.pre_acc = 0.0
+        self.jerk = 0.0
+        self.preT = 0.0
         self.data = deque(maxlen=800)
 
     def connect(self):
@@ -216,10 +221,16 @@ class ODriveThread(threading.Thread):
 
                 # Data collect
                 with self.data_lock:
+                    t = time.time()
+                    deltaT = t - self.preT
                     self.pos = (self.axis.encoder.pos_estimate - self.offset) * 360 / gear_ratio + self.start_pos
                     self.vel = self.axis.encoder.vel_estimate * 360 / gear_ratio
+                    self.acc = (self.vel - self.pre_vel) / deltaT
+                    self.jerk = (self.acc - self.pre_acc) / deltaT
+                    self.pre_vel = self.vel
+                    self.pre_acc = self.acc
                     tor_set = self.axis.motor.current_control.Iq_setpoint * self.Kt
-                    self.data.append((time.time(), self.pos, self.vel, self.pos_set, self.vel_set, tor_set))
+                    self.data.append((t, self.pos, self.vel, self.pos_set, self.vel_set, self.acc, self.acc_set, self.jerk, tor_set))
                     if len(self.data) > 800:
                         self.data = self.data[-800:]
 

@@ -33,7 +33,8 @@ class ControlGUI(tk.Tk):
 
         self.control_elms = {
             "Target": (self.controller.start_pos, "deg"), 
-            "Move time": (5.0, "s"), 
+            "Max velocity": (60, "deg/s"), 
+            # "Max jerk": (),
             "Kp": (self.controller.Kp, None), 
             "Kd": (self.controller.Kd, None), 
             "Control bandwidth": (self.controller.ctrl_bandwidth, None), 
@@ -47,6 +48,8 @@ class ControlGUI(tk.Tk):
             "Viscous friction": (self.controller.visc_friction, "Nm/rad"),
             "Torque limit": (self.controller.max_torque, "Nm")
         }
+
+        self.max_jerk = 0
 
         # UI state
         self.plotting = True
@@ -68,9 +71,10 @@ class ControlGUI(tk.Tk):
 
         # Plots: 3 stacked subplots (Position, Velocity, Torque)
         self.fig = Figure(figsize=(6, 6), dpi=100)
-        self.ax_pos = self.fig.add_subplot(311)
-        self.ax_vel = self.fig.add_subplot(312)
-        self.ax_tor = self.fig.add_subplot(313)
+        self.ax_pos = self.fig.add_subplot(411)
+        self.ax_vel = self.fig.add_subplot(412)
+        self.ax_acc = self.fig.add_subplot(413)
+        self.ax_tor = self.fig.add_subplot(414)
         self.fig.tight_layout(pad=2.0)
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=left)
@@ -141,6 +145,11 @@ class ControlGUI(tk.Tk):
         self.entry_vel_error = ttk.Entry(error_frame, width=12, state="readonly")
         self.entry_vel_error.grid(row=1, column=1, padx=4, pady=2)
 
+        ttk.Label(error_frame, text="Max jerk (deg/s^3):").grid(row=2, column=0, sticky=tk.W)
+        self.max_jerk_var = tk.StringVar(value="0")
+        self.entry_max_jerk = ttk.Entry(error_frame, textvariable=self.max_jerk_var, width=12, state="readonly")
+        self.entry_max_jerk.grid(row=2, column=1, padx=4, pady=2)
+
         # Send parameters block=========================================================================================================================================
         param_frame = ttk.LabelFrame(right, text="Parameters", padding=8)
         param_frame.pack(padx=6, pady=8, fill=tk.X)
@@ -176,8 +185,10 @@ class ControlGUI(tk.Tk):
         self._pos_set_line, = self.ax_pos.plot([], [], label="q_d (deg)", linestyle="--")
         self._vel_line, = self.ax_vel.plot([], [], label="qdot (deg/s)")
         self._vel_set_line, = self.ax_vel.plot([], [], label="qdot_d (deg/s)", linestyle="--")
+        self._acc_line, = self.ax_acc.plot([], [], label="qddot (deg/s^2)")
+        self._acc_set_line, = self.ax_acc.plot([], [], label="qddot_d (deg/s^2)", linestyle="--")
         self._tor_line, = self.ax_tor.plot([], [], label="Torque (Nm)")
-        for ax in (self.ax_pos, self.ax_vel, self.ax_tor):
+        for ax in (self.ax_pos, self.ax_vel, self.ax_acc, self.ax_tor):
             ax.grid(True)
             ax.legend(loc="upper right")
 
@@ -228,6 +239,7 @@ class ControlGUI(tk.Tk):
             logger.exception("Reset error")
 
     def _on_move(self):
+        self.max_jerk = 0
         try:
             elms = []
             for entry, var in self.control_panel:
@@ -338,7 +350,7 @@ class ControlGUI(tk.Tk):
 
             if data:
                 # data is list of tuples: (time, pos, vel, pos_set, vel_set, tor)
-                times, pos_vals, vel_vals, pos_set_vals, vel_set_vals, tor_vals = zip(*data)
+                times, pos_vals, vel_vals, acc_vals, pos_set_vals, vel_set_vals, acc_set_vals, jerk_vals, tor_vals = zip(*data)
                 # normalize time origin to the first sample in the list (keeps plotting stable)
                 t0 = times[0] if self._last_t0 is None else self._last_t0
                 # If a big discontinuity, reset origin to current first sample
@@ -353,6 +365,8 @@ class ControlGUI(tk.Tk):
                     self._pos_set_line.set_data(times_rel, pos_set_vals)
                     self._vel_line.set_data(times_rel, vel_vals)
                     self._vel_set_line.set_data(times_rel, vel_set_vals)
+                    self._acc_line.set_data(times_rel, acc_vals)
+                    self._acc_set_line.set_data(times_rel, acc_set_vals)
                     self._tor_line.set_data(times_rel, tor_vals)
 
                     # autoscale each axis
@@ -363,16 +377,19 @@ class ControlGUI(tk.Tk):
                         ax.autoscale_view()
                     autoscale(self.ax_pos, times_rel, pos_vals + pos_set_vals if isinstance(pos_vals, tuple) else pos_vals)
                     autoscale(self.ax_vel, times_rel, vel_vals + vel_set_vals if isinstance(vel_vals, tuple) else vel_vals)
+                    autoscale(self.ax_acc, times_rel, acc_vals + acc_set_vals if isinstance(vel_vals, tuple) else acc_vals)
                     autoscale(self.ax_tor, times_rel, tor_vals)
 
                     self.ax_pos.set_ylabel("deg")
                     self.ax_vel.set_ylabel("deg/s")
+                    self.ax_acc.set_ylabel("deg/s^2")
                     self.ax_tor.set_ylabel("Nm")
                     self.ax_tor.set_xlabel("Time (s)")
                     self.canvas.draw_idle()
 
                 # Update displayed numeric values from the latest sample
-                last_t, last_pos, last_vel, last_pos_set, last_vel_set, last_tor = data[-1]
+                last_t, last_pos, last_vel, last_acc, last_pos_set, last_vel_set, last_acc_set, last_jerk, last_tor = data[-1]
+                
                 # Show current position
                 try:
                     self.entry_pos.config(state="normal")
@@ -385,6 +402,7 @@ class ControlGUI(tk.Tk):
                 # Update errors (setpoint minus actual)
                 pos_err = last_pos_set - last_pos
                 vel_err = last_vel_set - last_vel
+                
                 try:
                     self.entry_pos_error.config(state="normal")
                     self.entry_pos_error.delete(0, tk.END)
@@ -395,11 +413,15 @@ class ControlGUI(tk.Tk):
                     self.entry_vel_error.delete(0, tk.END)
                     self.entry_vel_error.insert(0, f"{vel_err:.3f}")
                     self.entry_vel_error.config(state="readonly")
+
+                    if self.max_jerk < abs(last_jerk):
+                        self.max_jerk = abs(last_jerk)
+                        self.max_jerk_var.set(f"{self.max_jerk:.3f}")  
+
                 except Exception:
                     pass
 
             else:
-                # No data: clear plots (or leave previous)
                 pass
 
             # Update status text minimally
@@ -424,9 +446,6 @@ class ControlGUI(tk.Tk):
         btn_state = "normal" if enabled else "disabled"
         self.btn_send_param.configure(state=btn_state)
 
-    # ---------------------------
-    # On-close / cleanup
-    # ---------------------------
     def _on_close(self):
         # Confirm close
         if messagebox.askokcancel("Quit", "Do you want to quit?"):

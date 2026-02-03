@@ -6,7 +6,7 @@ import odrive
 import math
 from odrive.enums import AXIS_STATE_CLOSED_LOOP_CONTROL, AXIS_STATE_IDLE
 from collections import deque
-from Trajectory import TrapezoidalTrajectory
+from Trajectory import TrapezoidalTrajectory, CubicTrajectory, QuinticTrajectory
 
 CLOSED_LOOP_CONTROL = AXIS_STATE_CLOSED_LOOP_CONTROL
 IDLE = AXIS_STATE_IDLE
@@ -35,7 +35,7 @@ class ODriveThread(threading.Thread):
         self.tor_coef = 0.708282
         self.Kt = 8.27/270
         self.offset = 0.0
-        self.traj = TrapezoidalTrajectory()
+        self.traj = QuinticTrajectory()
 
         # Physic components
         self.t_ref = - math.inf
@@ -57,10 +57,12 @@ class ODriveThread(threading.Thread):
 
         self.coul_friction = 0.0
         self.visc_friction = 0.00276 * gear_ratio**2 
+        self.acc_filter = 0.15
+        self.jerk_filter = 0.15
 
         # inputs
         self.Kp = 30
-        self.Kd = 5
+        self.Kd = 8
         self.torque_set = 0.0
         self.pos_set = self.start_pos
         self.vel_set = 0.0    
@@ -71,6 +73,13 @@ class ODriveThread(threading.Thread):
         # show
         self.pos = 0.0
         self.vel = 0.0
+        self.pre_vel = 0.0
+        self.acc = 0.0
+        self.pre_acc = 0.0
+        self.pre_raw_acc = 0.0
+        self.jerk = 0.0
+        self.pre_jerk = 0.0
+        self.preT = 0.0
         self.data = deque(maxlen=800)
 
     def connect(self):
@@ -114,18 +123,17 @@ class ODriveThread(threading.Thread):
     def update_ctrlElms(self, *ctrlElms):
         try:
             target = 0
-            time_set = 0
             with self.data_lock:
                 self.t_ref = time.time()
                 target = ctrlElms[0]
-                time_set = ctrlElms[1]
+                self.max_vel = ctrlElms[1]
                 self.Kp = ctrlElms[2]
                 self.Kd = ctrlElms[3]
                 self.ctrl_bandwidth = ctrlElms[4]
                 self.enc_bandwidth = ctrlElms[5]
                 self.axis.motor.config.current_control_bandwidth = self.ctrl_bandwidth
                 self.axis.encoder.config.bandwidth = self.enc_bandwidth
-            self.traj.param_calc(self.pos, target, time_set, self.max_vel)
+            self.traj.param_calc(self.pos, target, self.max_vel)
 
         except Exception as e:
             print("Elements update error:", e)
@@ -136,10 +144,10 @@ class ODriveThread(threading.Thread):
             self.hanger_distance = loadParms[1]
             self.coul_friction = loadParms[2]
             self.visc_friction = loadParms[3]
-            self.max_torque = 2/15 * self.ext_load * self.hanger_distance +  1.5 
             self.m = self.link_mass + self.hanger_mass + self.ext_load
             self.lc = (self.center_distance * self.link_mass + self.hanger_distance * (self.hanger_mass + self.ext_load))/self.m
             self.Ic = self.const_inertia + (self.hanger_mass + self.ext_load) * (self.hanger_distance **2)
+            self.max_torque = loadParms[4]
 
         except Exception as e:
             print("Parameter update error:", e)
@@ -229,10 +237,25 @@ class ODriveThread(threading.Thread):
 
                 # Data collect
                 with self.data_lock:
+                    t = time.time()
+                    deltaT = t - self.preT
                     self.pos = (self.axis.encoder.pos_estimate - self.offset) * 360 / gear_ratio + self.start_pos
                     self.vel = self.axis.encoder.vel_estimate * 360 / gear_ratio
+                    if deltaT >= 0.0001:
+                        raw_acc = (self.vel - self.pre_vel) / deltaT
+                        self.acc = self.acc_filter * raw_acc + (1 - self.acc_filter) * self.pre_acc
+                        raw_jerk = (raw_acc - self.pre_raw_acc) / deltaT
+                        self.jerk = self.jerk_filter * raw_jerk + (1 - self.jerk_filter) * self.pre_jerk
+                        self.pre_vel = self.vel
+                        self.pre_acc = self.acc
+                        self.pre_raw_acc = raw_acc
+                        self.pre_jerk = self.jerk
+                        self.preT = t
                     tor_set = self.axis.motor.current_control.Iq_setpoint * self.Kt
-                    self.data.append((time.time(), self.pos, self.vel, self.pos_set, self.vel_set, tor_set))
+                    self.data.append((t, self.pos, self.vel,self.acc, self.pos_set, self.vel_set, self.acc_set, self.jerk, tor_set))
+                    
+
+                    
                     if len(self.data) > 800:
                         self.data = self.data[-800:]
 
