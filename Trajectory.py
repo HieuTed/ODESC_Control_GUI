@@ -142,6 +142,10 @@ class CubicTrajectory(TrajectoryBase):
         t2 = t*t
         t3 = t2*t
         
+        pos = self.a0 + self.a1*t + self.a2*t2 + self.a3*t3
+        vel = self.a1 + 2*self.a2*t + 3*self.a3*t2
+        acc = 2*self.a2 + 6*self.a3*t
+        
         return pos, vel, acc
     
 class QuinticTrajectory(TrajectoryBase):
@@ -191,3 +195,135 @@ class QuinticTrajectory(TrajectoryBase):
         acc = 2*self.a2 + 6*self.a3*t + 12*self.a4*t2 + 20*self.a5*t3
         
         return pos, vel, acc
+    
+class SplineTrajectory(TrajectoryBase):
+    def __init__(self):
+        super().__init__()
+        # Các tham số cho quỹ đạo splines 7 đoạn với giới hạn jerk
+        self.max_jerk = 400  # deg/s^3
+        self.max_acc = 80  # deg/s^2
+        # Các thời gian cho từng phase
+        self.t1 = 0.0
+        self.t2 = 0.0
+        self.t3 = 0.0
+        self.t4 = 0.0
+        self.t5 = 0.0
+        self.t6 = 0.0
+        self.t7 = 0.0
+        # Các khoảng cách tích lũy (tùy chọn, để debug)
+        self.d1 = 0.0
+        self.d2 = 0.0
+        self.d3 = 0.0
+        self.d4 = 0.0
+        self.d5 = 0.0
+        self.d6 = 0.0
+        self.d7 = 0.0
+
+    def param_calc(self, start_p, end_p, max_v):
+        self.start_p = start_p
+        self.end_p = end_p
+        dist = end_p - start_p
+        abs_dist = abs(dist)
+        self.direction = 1.0 if dist >= 0 else -1.0
+        
+        # Tính thời gian jerk phase
+        t_j = self.max_acc / self.max_jerk
+        d_j = (1/6.0) * self.max_jerk * t_j**3
+        d_a = self.max_acc * t_j**2
+        d_acc = 2 * d_j + d_a
+        
+        if abs_dist > 2 * d_acc:
+            t_const = (abs_dist - 2 * d_acc) / max_v
+        else:
+            # Điều chỉnh nếu không đủ khoảng cách cho constant vel
+            scale = math.sqrt(abs_dist / (2 * d_acc)) if d_acc > 0 else 1.0
+            t_j *= scale
+            d_j *= scale**3
+            d_a *= scale**2
+            d_acc = 2 * d_j + d_a
+            t_const = 0.0
+        
+        self.t1 = t_j
+        self.t2 = t_j
+        self.t3 = t_j
+        self.t4 = t_const
+        self.t5 = t_j
+        self.t6 = t_j
+        self.t7 = t_j
+        self.total_time = self.t1 + self.t2 + self.t3 + self.t4 + self.t5 + self.t6 + self.t7
+        
+        # Tính khoảng cách tích lũy tại cuối mỗi phase
+        self.d1 = (1/6.0) * self.max_jerk * self.t1**3
+        self.d2 = self.d1 + 0.5 * self.max_acc * self.t1**2 + self.max_acc * self.t1 * self.t2 + 0.5 * self.max_acc * self.t2**2
+        self.d3 = self.d2 + self.max_acc * self.t2 * self.t3 + 0.5 * self.max_acc * self.t3**2 - (1/6.0) * self.max_jerk * self.t3**3
+        self.d4 = self.d3 + self.max_acc * self.t2 * self.t4
+        self.d5 = self.d4 + self.max_acc * self.t2 * self.t5 - (1/6.0) * self.max_jerk * self.t5**3
+        self.d6 = self.d5 + (self.max_acc * self.t2 - self.max_acc * self.t5) * self.t6 - 0.5 * self.max_acc * self.t6**2
+        self.d7 = self.d6 + (self.max_acc * self.t2 - self.max_acc * self.t6) * self.t7 - 0.5 * self.max_acc * self.t7**2 + (1/6.0) * self.max_jerk * self.t7**3
+
+    def desired_state(self, t):
+        if t <= 0: return self.start_p, 0.0, 0.0
+        if t >= self.total_time or self.total_time == math.inf: return self.end_p, 0.0, 0.0
+        
+        pos = 0.0
+        vel = 0.0
+        acc = 0.0
+        jerk = 0.0
+        
+        if t < self.t1:
+            # Phase 1: jerk = max_jerk, acc tăng từ 0
+            jerk = self.max_jerk
+            acc = jerk * t
+            vel = 0.5 * jerk * t**2
+            pos = (1/6.0) * jerk * t**3
+        elif t < self.t1 + self.t2:
+            # Phase 2: jerk = 0, acc = max_acc
+            dt = t - self.t1
+            jerk = 0.0
+            acc = self.max_acc
+            vel = 0.5 * self.max_jerk * self.t1**2 + acc * dt
+            pos = (1/6.0) * self.max_jerk * self.t1**3 + 0.5 * acc * self.t1**2 + acc * self.t1 * dt + 0.5 * acc * dt**2
+        elif t < self.t1 + self.t2 + self.t3:
+            # Phase 3: jerk = -max_jerk, acc giảm từ max_acc về 0
+            dt = t - (self.t1 + self.t2)
+            jerk = -self.max_jerk
+            acc = self.max_acc + jerk * dt
+            vel = 0.5 * self.max_jerk * self.t1**2 + self.max_acc * self.t2 + self.max_acc * dt + 0.5 * jerk * dt**2
+            pos = (1/6.0) * self.max_jerk * self.t1**3 + 0.5 * self.max_acc * self.t1**2 + self.max_acc * self.t1 * self.t2 + 0.5 * self.max_acc * self.t2**2 + self.max_acc * self.t2 * dt + 0.5 * self.max_acc * dt**2 + (1/6.0) * jerk * dt**3
+        elif t < self.t1 + self.t2 + self.t3 + self.t4:
+            # Phase 4: jerk = 0, acc = 0, vel constant
+            dt = t - (self.t1 + self.t2 + self.t3)
+            jerk = 0.0
+            acc = 0.0
+            vel = self.max_acc * self.t2  # vel at end of phase 2
+            pos = self.d3 + vel * dt
+        elif t < self.t1 + self.t2 + self.t3 + self.t4 + self.t5:
+            # Phase 5: jerk = -max_jerk, acc giảm từ 0 về -max_acc
+            dt = t - (self.t1 + self.t2 + self.t3 + self.t4)
+            jerk = -self.max_jerk
+            acc = jerk * dt
+            vel = self.max_acc * self.t2 - 0.5 * self.max_jerk * dt**2
+            pos = self.d4 + self.max_acc * self.t2 * dt - (1/6.0) * self.max_jerk * dt**3
+            # d4 = d3 + vel * self.t4
+        elif t < self.t1 + self.t2 + self.t3 + self.t4 + self.t5 + self.t6:
+            # Phase 6: jerk = 0, acc = -max_acc
+            dt = t - (self.t1 + self.t2 + self.t3 + self.t4 + self.t5)
+            jerk = 0.0
+            acc = -self.max_acc
+            vel = self.max_acc * self.t2 - self.max_acc * dt
+            pos = self.d5 + self.max_acc * self.t2 * dt - 0.5 * self.max_acc * dt**2
+        else:
+            # Phase 7: jerk = max_jerk, acc tăng từ -max_acc về 0
+            dt = t - (self.t1 + self.t2 + self.t3 + self.t4 + self.t5 + self.t6)
+            jerk = self.max_jerk
+            acc = -self.max_acc + jerk * dt
+            vel = self.max_acc * self.t2 - self.max_acc * self.t6 + -self.max_acc * dt + 0.5 * jerk * dt**2
+            pos = self.d6 + (self.max_acc * self.t2 - self.max_acc * self.t6) * dt - 0.5 * self.max_acc * self.t6 * dt + -0.5 * self.max_acc * dt**2 + (1/6.0) * jerk * dt**3
+        
+        # Điều chỉnh cho hướng
+        final_pos = self.start_p + pos * self.direction
+        final_vel = vel * self.direction
+        final_acc = acc * self.direction
+        final_jerk = jerk * self.direction
+        
+        return final_pos, final_vel, final_acc

@@ -6,7 +6,9 @@ import odrive
 import math
 from odrive.enums import AXIS_STATE_CLOSED_LOOP_CONTROL, AXIS_STATE_IDLE
 from collections import deque
-from Trajectory import TrapezoidalTrajectory, CubicTrajectory, QuinticTrajectory
+from Trajectory import TrapezoidalTrajectory, CubicTrajectory, QuinticTrajectory, SplineTrajectory
+from scipy.signal import butter, sosfilt
+import numpy as np
 
 CLOSED_LOOP_CONTROL = AXIS_STATE_CLOSED_LOOP_CONTROL
 IDLE = AXIS_STATE_IDLE
@@ -60,15 +62,29 @@ class ODriveThread(threading.Thread):
         self.acc_filter = 0.15
         self.jerk_filter = 0.15
 
+        # --- Low-pass filter settings ---
+        self.fs = 50.0        # loop frequency (Hz) ~ 1/0.01
+        self.fc_acc = 0.5        # cutoff for acceleration (Hz)
+        self.fc_jerk = 0.5       # cutoff for jerk (Hz)
+        self.filter_order = 1
+        # Butterworth low-pass (SOS form is stable)
+        self.sos_acc = butter(self.filter_order, self.fc_acc, btype="low",
+                              fs=self.fs, output="sos")
+        self.sos_jerk = butter(self.filter_order, self.fc_jerk, btype="low",
+                               fs=self.fs, output="sos")
+        # filter states (for streaming)
+        self.zi_acc = np.zeros((self.sos_acc.shape[0], 2))
+        self.zi_jerk = np.zeros((self.sos_jerk.shape[0], 2))
+
         # inputs
-        self.Kp = 30
-        self.Kd = 8
+        self.Kp = 35
+        self.Kd = 6
         self.torque_set = 0.0
         self.pos_set = self.start_pos
         self.vel_set = 0.0    
         self.acc_set = 0.0   
         self.ctrl_bandwidth = 2000
-        self.enc_bandwidth = 50
+        self.enc_bandwidth = 1000
 
         # show
         self.pos = 0.0
@@ -180,6 +196,9 @@ class ODriveThread(threading.Thread):
     def reset(self):
         self.traj.reset()
         self.t_ref = - math.inf
+        self.zi_acc[:] = 0
+        self.zi_jerk[:] = 0
+
         self.return_IDLE()
         self.isOffset = False
         self._estop_event.clear()
@@ -243,9 +262,15 @@ class ODriveThread(threading.Thread):
                     self.vel = self.axis.encoder.vel_estimate * 360 / gear_ratio
                     if deltaT >= 0.0001:
                         raw_acc = (self.vel - self.pre_vel) / deltaT
-                        self.acc = self.acc_filter * raw_acc + (1 - self.acc_filter) * self.pre_acc
                         raw_jerk = (raw_acc - self.pre_raw_acc) / deltaT
-                        self.jerk = self.jerk_filter * raw_jerk + (1 - self.jerk_filter) * self.pre_jerk
+
+                        # streaming low-pass filter
+                        acc_f, self.zi_acc = sosfilt(self.sos_acc, [raw_acc], zi=self.zi_acc)
+                        jerk_f, self.zi_jerk = sosfilt(self.sos_jerk, [raw_jerk], zi=self.zi_jerk)
+
+                        self.acc = float(acc_f[0])
+                        self.jerk = float(jerk_f[0])
+
                         self.pre_vel = self.vel
                         self.pre_acc = self.acc
                         self.pre_raw_acc = raw_acc

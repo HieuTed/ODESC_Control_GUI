@@ -15,7 +15,8 @@ import Trajectory_controller as controller
 IDLE = controller.IDLE
 CLOSE_LOOP_CONTROL = controller.CLOSED_LOOP_CONTROL
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO) #GAY
+
 logger = logging.getLogger("ControlGUI")
 
 # Combined update interval (GUI + plot)
