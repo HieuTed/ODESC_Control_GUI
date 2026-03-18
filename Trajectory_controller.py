@@ -5,9 +5,10 @@ import time
 import odrive
 import math
 from odrive.enums import AXIS_STATE_CLOSED_LOOP_CONTROL, AXIS_STATE_IDLE
+from kinematic_calculate import get_acc_jerk
 from collections import deque
 from Trajectory import TrapezoidalTrajectory, CubicTrajectory, QuinticTrajectory, SplineTrajectory
-from scipy.signal import butter, sosfilt
+from scipy.signal import savgol_coeffs
 import numpy as np
 
 CLOSED_LOOP_CONTROL = AXIS_STATE_CLOSED_LOOP_CONTROL
@@ -59,22 +60,13 @@ class ODriveThread(threading.Thread):
 
         self.coul_friction = 0.0
         self.visc_friction = 0.00276 * gear_ratio**2 
-        self.acc_filter = 0.15
-        self.jerk_filter = 0.15
 
-        # --- Low-pass filter settings ---
-        self.fs = 50.0        # loop frequency (Hz) ~ 1/0.01
-        self.fc_acc = 0.5        # cutoff for acceleration (Hz)
-        self.fc_jerk = 0.5       # cutoff for jerk (Hz)
-        self.filter_order = 1
-        # Butterworth low-pass (SOS form is stable)
-        self.sos_acc = butter(self.filter_order, self.fc_acc, btype="low",
-                              fs=self.fs, output="sos")
-        self.sos_jerk = butter(self.filter_order, self.fc_jerk, btype="low",
-                               fs=self.fs, output="sos")
-        # filter states (for streaming)
-        self.zi_acc = np.zeros((self.sos_acc.shape[0], 2))
-        self.zi_jerk = np.zeros((self.sos_jerk.shape[0], 2))
+        # --- Savitzky-Golay filter settings ---
+        self.window_size = 25        # number of points in sliding window
+        self.poly_order = 2             # polynomial order for fitting
+        self.velFilBuf = deque(maxlen=self.window_size)  # velocity buffer for filtering
+        self.timeFilBuf = deque(maxlen=self.window_size)
+        self.t_filter_ref = 0
 
         # inputs
         self.Kp = 35
@@ -87,14 +79,9 @@ class ODriveThread(threading.Thread):
         self.enc_bandwidth = 1000
 
         # show
+        self.control_loop = 0.001
         self.pos = 0.0
-        self.vel = 0.0
-        self.pre_vel = 0.0
-        self.acc = 0.0
-        self.pre_acc = 0.0
-        self.pre_raw_acc = 0.0
-        self.jerk = 0.0
-        self.pre_jerk = 0.0
+        self.vel = 0.0                  # raw velocity from ODrive (used for control)
         self.preT = 0.0
         self.data = deque(maxlen=800)
 
@@ -196,9 +183,8 @@ class ODriveThread(threading.Thread):
     def reset(self):
         self.traj.reset()
         self.t_ref = - math.inf
-        self.zi_acc[:] = 0
-        self.zi_jerk[:] = 0
-
+        self.velFilBuf.clear()
+        self.timeFilBuf.clear()
         self.return_IDLE()
         self.isOffset = False
         self._estop_event.clear()
@@ -259,25 +245,23 @@ class ODriveThread(threading.Thread):
                     t = time.time()
                     deltaT = t - self.preT
                     self.pos = (self.axis.encoder.pos_estimate - self.offset) * 360 / gear_ratio + self.start_pos
-                    self.vel = self.axis.encoder.vel_estimate * 360 / gear_ratio
-                    if deltaT >= 0.0001:
-                        raw_acc = (self.vel - self.pre_vel) / deltaT
-                        raw_jerk = (raw_acc - self.pre_raw_acc) / deltaT
+                    self.vel = self.axis.encoder.vel_estimate * 360 / gear_ratio  # raw velocity from ODrive (used for control)
+                    
+                    if deltaT >= self.control_loop:
+                        
+                        self.velFilBuf.append(self.vel)
+                        self.timeFilBuf.append(t)
 
-                        # streaming low-pass filter
-                        acc_f, self.zi_acc = sosfilt(self.sos_acc, [raw_acc], zi=self.zi_acc)
-                        jerk_f, self.zi_jerk = sosfilt(self.sos_jerk, [raw_jerk], zi=self.zi_jerk)
+                        vel_filtered = 0
+                        acc = 0.0
+                        jerk = 0.0
+                        if len(self.velFilBuf) == self.window_size:
+                            vel = np.array(list(self.velFilBuf))
+                            _t = np.array(list(self.timeFilBuf))
+                            vel_filtered, acc, jerk = get_acc_jerk(_t, vel, self.window_size, self.poly_order)
 
-                        self.acc = float(acc_f[0])
-                        self.jerk = float(jerk_f[0])
-
-                        self.pre_vel = self.vel
-                        self.pre_acc = self.acc
-                        self.pre_raw_acc = raw_acc
-                        self.pre_jerk = self.jerk
-                        self.preT = t
                     tor_set = self.axis.motor.current_control.Iq_setpoint * self.Kt
-                    self.data.append((t, self.pos, self.vel,self.acc, self.pos_set, self.vel_set, self.acc_set, self.jerk, tor_set))
+                    self.data.append((t, self.pos, vel_filtered,acc, self.pos_set, self.vel_set, self.acc_set, jerk, tor_set))
                     
 
                     

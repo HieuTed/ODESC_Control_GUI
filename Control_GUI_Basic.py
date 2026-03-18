@@ -4,6 +4,7 @@ import threading
 import time
 import logging
 import math
+from collections import deque
 
 # matplotlib embedding
 from matplotlib.figure import Figure
@@ -134,7 +135,28 @@ class ControlGUI(tk.Tk):
         self.btn_move = ttk.Button(control_frame, text="Move", command=self._on_move, state="disable")
         self.btn_move.pack(pady=(10, 0), fill=tk.X)
 
-        # Error display==================================================================================================================================================
+        # Filter settings==================================================================================================================================================
+        filter_frame = ttk.LabelFrame(right, text="Filter", padding=8)
+        filter_frame.pack(padx=6, pady=8, fill=tk.X)
+
+        filter_grid = ttk.Frame(filter_frame)
+        filter_grid.pack(fill=tk.X)
+
+        ttk.Label(filter_grid, text="Window size:").grid(row=0, column=0, sticky=tk.W)
+        self.window_size_var = tk.StringVar(value=str(self.controller.window_size))
+        self.entry_window_size = ttk.Entry(filter_grid, textvariable=self.window_size_var, width=12)
+        self.entry_window_size.grid(row=0, column=1, padx=4, pady=2)
+
+        ttk.Label(filter_grid, text="Poly order:").grid(row=1, column=0, sticky=tk.W)
+        self.poly_order_var = tk.StringVar(value=str(self.controller.poly_order))
+        self.entry_poly_order = ttk.Entry(filter_grid, textvariable=self.poly_order_var, width=12)
+        self.entry_poly_order.grid(row=1, column=1, padx=4, pady=2)
+
+        # Apply button
+        self.btn_apply_filter = ttk.Button(filter_frame, text="Apply", command=self._on_apply_filter, state="disable")
+        self.btn_apply_filter.pack(pady=(10, 0), fill=tk.X)
+
+        # Error display===================================================================================================================================================
         error_frame = ttk.LabelFrame(right, text="Error", padding=8)
         error_frame.pack(padx=6, pady=8, fill=tk.X)
 
@@ -278,6 +300,39 @@ class ControlGUI(tk.Tk):
             logger.exception("Send parameters error")
             messagebox.showerror("Error", "Failed to send parameters to controller")
 
+    def _on_apply_filter(self):
+        try:
+            window_size = int(self.window_size_var.get().strip())
+            poly_order = int(self.poly_order_var.get().strip())
+
+            # Validate filter parameters
+            if window_size <= 0:
+                messagebox.showwarning("Filter", "Window size must be positive")
+                return
+            if window_size % 2 == 0:
+                messagebox.showwarning("Filter", "Window size must be odd")
+                return
+            if poly_order >= window_size:
+                messagebox.showwarning("Filter", "Poly order must be less than window size")
+                return
+            if poly_order < 0:
+                messagebox.showwarning("Filter", "Poly order must be non-negative")
+                return
+
+            # Update controller filter parameters
+            with self.controller.data_lock:
+                self.controller.window_size = window_size
+                self.controller.poly_order = poly_order
+                self.controller.velFilBuf = deque(maxlen=window_size)
+                self.controller.timeFilBuf = deque(maxlen=window_size)
+
+            self.status_text.set("Status: filter settings updated")
+        except ValueError:
+            messagebox.showerror("Error", "Please enter valid integers for window size and poly order")
+        except Exception:
+            logger.exception("Apply filter error")
+            messagebox.showerror("Error", "Failed to apply filter settings")
+
     def _on_mode_tog(self):
         # Toggle closed loop / IDLE on controller
         try:
@@ -333,6 +388,7 @@ class ControlGUI(tk.Tk):
             # Enable/disable buttons depending on mode and offset
             self.send_enable(enabled=(not closed_loop))
             self.move_enable(enabled=(is_offset and closed_loop))
+            self.btn_apply_filter.configure(state="normal" if connected else "disabled")
 
             # Enable/disable target entry depending on offset
             if is_offset:
@@ -351,7 +407,7 @@ class ControlGUI(tk.Tk):
 
             if data:
                 # data is list of tuples: (time, pos, vel, pos_set, vel_set, tor)
-                times, pos_vals, vel_vals, acc_vals, pos_set_vals, vel_set_vals, acc_set_vals, jerk_vals, tor_vals = zip(*data)
+                times, pos_vals, vel_vals, acc_vals, pos_set_vals, vel_set_vals, acc_set_vals, _, tor_vals = zip(*data)
                 # normalize time origin to the first sample in the list (keeps plotting stable)
                 t0 = times[0] if self._last_t0 is None else self._last_t0
                 # If a big discontinuity, reset origin to current first sample
@@ -389,7 +445,7 @@ class ControlGUI(tk.Tk):
                     self.canvas.draw_idle()
 
                 # Update displayed numeric values from the latest sample
-                last_t, last_pos, last_vel, last_acc, last_pos_set, last_vel_set, last_acc_set, last_jerk, last_tor = data[-1]
+                _, last_pos, last_vel, _, last_pos_set, last_vel_set, _, last_jerk, _ = data[-1]
                 
                 # Show current position
                 try:
@@ -418,6 +474,7 @@ class ControlGUI(tk.Tk):
                     if self.max_jerk < abs(last_jerk):
                         self.max_jerk = abs(last_jerk)
                         self.max_jerk_var.set(f"{self.max_jerk:.3f}")  
+
 
                 except Exception:
                     pass
